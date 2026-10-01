@@ -114,6 +114,24 @@ go run .
 
 高级检索只读取已登记记录，不改变投递执行、重试触发、记录写入与历史失败原因的保留方式。
 
+### `GET /api/v1/delivery-records/failure-summary`
+
+只读的失败原因汇总。`channel`、`start`、`end` 为必填，口径与基础查询一致：限定单个渠道与半开区间 `start <= occurred_at < end`，时间参数为 RFC 3339 且 `start` 必须早于 `end`。可选 `template_id` 按去除首尾空白后的模板标识精确匹配；只传空白视为非法。
+
+只统计 `status` 为 `failed` 或 `retrying` 且带有非空 `failure_reason` 的已登记记录。响应为单个 JSON 对象：
+
+```json
+{
+  "groups": [
+    {"failure_reason": "provider timeout", "attempt_count": 4},
+    {"failure_reason": "HTTP 503", "attempt_count": 2}
+  ],
+  "total_attempts": 6
+}
+```
+
+`failure_reason` 保留存储原文并按原文精确分组，不做大小写折叠、去空白或归一化；`attempt_count` 是该原文命中的尝试数，`total_attempts` 是各分组计数之和。`groups` 按 `attempt_count` 降序排列，计数相同时按 `failure_reason` 原文升序排列。没有命中时返回 HTTP 200、空 `groups` 数组和 `total_attempts` 0。
+
 ## 错误约定
 
 所有错误响应都是单个顶层 `error` 对象，包含 `code` 与 `message` 两个字符串字段；`message` 不包含 SQL、堆栈或文件路径。
@@ -123,6 +141,7 @@ go run .
 | 400 | `INVALID_DELIVERY_RECORD` | 写入校验失败：渠道不存在、状态非法、`retry_count` 缺失或不是非负整数、`failed`/`retrying` 缺少失败原因、`pending`/`succeeded` 携带失败原因、时间格式非法 |
 | 400 | `INVALID_DELIVERY_QUERY` | 查询校验失败：渠道不存在、时间格式非法、`start` 不早于 `end`、缺少时间参数 |
 | 400 | `INVALID_DELIVERY_SEARCH` | 高级检索校验失败：缺少或非法的 `channel`/`start`/`end`、时间不是 RFC 3339、`start` 不早于 `end`、渠道或 `status` 越界、可选条件为空值、`retry_min`/`retry_max` 为负数或逆序、`page` 小于 1、`page_size` 超出 1–200 或类型格式非法 |
+| 400 | `INVALID_DELIVERY_SUMMARY` | 失败原因汇总校验失败：缺少或非法的 `channel`/`start`/`end`、时间不是 RFC 3339、`start` 不早于 `end`、`template_id` 显式传入空白值 |
 | 404 | `DELIVERY_RECORD_NOT_FOUND` | 按标识查询不到记录 |
 | 503 | `STORAGE_UNAVAILABLE` | 登记或查询存储暂时不可用；此时不会返回任何声称记录已保存的结果 |
 

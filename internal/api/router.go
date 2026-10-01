@@ -27,6 +27,7 @@ func NewRouter(st *store.Store) *gin.Engine {
 	router.POST(deliveryRecords, createDeliveryRecord(st))
 	router.GET(deliveryRecords, listDeliveryRecords(st))
 	router.GET(deliveryRecords+"/search", searchDeliveryRecords(st))
+	router.GET(deliveryRecords+"/failure-summary", summarizeDeliveryFailures(st))
 	router.GET(deliveryRecords+"/:id", getDeliveryRecord(st))
 
 	router.NoRoute(func(c *gin.Context) {
