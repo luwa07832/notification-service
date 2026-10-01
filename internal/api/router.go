@@ -15,6 +15,8 @@ func NewRouter(st *store.Store) *gin.Engine {
 	router := gin.New()
 	router.Use(gin.Recovery())
 
+	registerDeliveryRoutes(router, st)
+
 	router.GET("/healthz", func(c *gin.Context) {
 		if err := st.Ping(); err != nil {
 			c.JSON(http.StatusServiceUnavailable, gin.H{"error": gin.H{"code": "storage_unavailable", "message": "database is not available"}})

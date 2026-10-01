@@ -41,4 +41,18 @@ CREATE TABLE IF NOT EXISTS service_metadata (
 	key   TEXT PRIMARY KEY,
 	value TEXT NOT NULL
 );
+
+CREATE TABLE IF NOT EXISTS delivery_records (
+	id               TEXT PRIMARY KEY,
+	template_id      TEXT NOT NULL,
+	channel          TEXT NOT NULL,
+	occurred_at      TEXT NOT NULL,
+	occurred_at_key  TEXT NOT NULL,
+	status           TEXT NOT NULL,
+	retry_count      INTEGER NOT NULL,
+	failure_reason   TEXT
+);
+
+CREATE INDEX IF NOT EXISTS idx_delivery_records_channel_time
+	ON delivery_records (channel, occurred_at_key);
 `
