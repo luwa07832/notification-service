@@ -13,6 +13,7 @@ import (
 const (
 	codeInvalidRecord = "INVALID_DELIVERY_RECORD"
 	codeInvalidQuery  = "INVALID_DELIVERY_QUERY"
+	codeInvalidSearch = "INVALID_DELIVERY_SEARCH"
 	codeRecordMissing = "DELIVERY_RECORD_NOT_FOUND"
 	codeStorageDown   = "STORAGE_UNAVAILABLE"
 )
@@ -44,6 +45,50 @@ func createDeliveryRecord(st *store.Store) gin.HandlerFunc {
 			return
 		}
 		c.JSON(http.StatusCreated, saved)
+	}
+}
+
+// searchDeliveryRecords handles GET /api/v1/delivery-records/search. Channel
+// and the half-open time range work exactly like the simple list entry; the
+// optional filters narrow the matches and the response always carries the
+// pagination envelope with the accurate total.
+func searchDeliveryRecords(st *store.Store) gin.HandlerFunc {
+	return func(c *gin.Context) {
+		input := delivery.SearchInput{
+			Channel: c.Query("channel"),
+			Start:   c.Query("start"),
+			End:     c.Query("end"),
+		}
+		input.TemplateID, input.TemplateIDSet = c.GetQuery("template_id")
+		input.Status, input.StatusSet = c.GetQuery("status")
+		input.RetryMin, input.RetryMinSet = c.GetQuery("retry_min")
+		input.RetryMax, input.RetryMaxSet = c.GetQuery("retry_max")
+		input.FailureReasonContains, input.FailureReasonContainsSet = c.GetQuery("failure_reason_contains")
+		input.Page, input.PageSet = c.GetQuery("page")
+		input.PageSize, input.PageSizeSet = c.GetQuery("page_size")
+
+		query, err := delivery.NewSearchQuery(input)
+		if err != nil {
+			respondError(c, http.StatusBadRequest, codeInvalidSearch, "delivery search parameters are not valid")
+			return
+		}
+
+		records, total, err := st.SearchDeliveryRecords(c.Request.Context(), query)
+		if err != nil {
+			respondError(c, http.StatusServiceUnavailable, codeStorageDown, "delivery record storage is not available")
+			return
+		}
+		if records == nil {
+			records = []delivery.Record{}
+		}
+		c.JSON(http.StatusOK, gin.H{
+			"records": records,
+			"pagination": gin.H{
+				"page":      query.Page,
+				"page_size": query.PageSize,
+				"total":     total,
+			},
+		})
 	}
 }
 

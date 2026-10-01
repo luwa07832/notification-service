@@ -81,6 +81,42 @@ go run .
 {"records":[]}
 ```
 
+### `GET /api/v1/delivery-records/search`
+
+面向失败追踪的高级检索，用于定位同一模板在指定渠道和时间范围内的重试过程，比较每次尝试的状态、重试次数和失败原因。`channel`、`start`、`end` 与上述按渠道查询口径一致：限定单一渠道及半开区间 `start <= occurred_at < end`，时间使用 RFC 3339 且 `start` 必须早于 `end`。
+
+可选查询参数（全部条件同时满足才返回记录）：
+
+| 参数 | 说明 |
+|---|---|
+| `template_id` | 按去除首尾空白后的模板标识精确匹配 |
+| `status` | 只接受 `pending`、`retrying`、`succeeded`、`failed` |
+| `retry_min`、`retry_max` | 非负整数，且 `retry_min <= retry_max`；可只给一端 |
+| `failure_reason_contains` | 对失败原因原文做区分大小写的子串匹配 |
+| `page` | 页码，从 1 开始，默认 1 |
+| `page_size` | 每页条数，默认 50，范围 1 到 200 |
+
+结果按 `occurred_at` 升序、同一时刻按 `id` 升序稳定排列。响应包含 `records` 与 `pagination`，`total` 为全部命中记录的准确数量：
+
+```json
+{
+  "records": [
+    {
+      "id": "f1c2e0d4-9b72-4e6a-8c11-6b2a4f3d0a11",
+      "template_id": "tpl-1",
+      "channel": "sms",
+      "occurred_at": "2026-10-01T10:00:00Z",
+      "status": "failed",
+      "retry_count": 2,
+      "failure_reason": "provider timeout"
+    }
+  ],
+  "pagination": {"page": 1, "page_size": 50, "total": 1}
+}
+```
+
+没有命中记录时返回 HTTP 200，`records` 为空数组并仍返回分页信息。高级检索只读取已登记记录，不改变投递、重试触发、记录写入和历史失败原因的保留方式。
+
 ## 错误约定
 
 所有错误响应都是单个顶层 `error` 对象，包含 `code` 与 `message` 两个字符串字段；`message` 不包含 SQL、堆栈或文件路径。
@@ -89,6 +125,7 @@ go run .
 |---|---|---|
 | 400 | `INVALID_DELIVERY_RECORD` | 写入校验失败：渠道不存在、状态非法、`retry_count` 缺失或不是非负整数、`failed`/`retrying` 缺少失败原因、`pending`/`succeeded` 携带失败原因、时间格式非法 |
 | 400 | `INVALID_DELIVERY_QUERY` | 查询校验失败：渠道不存在、时间格式非法、`start` 不早于 `end`、缺少时间参数 |
+| 400 | `INVALID_DELIVERY_SEARCH` | 高级检索校验失败：参数缺失或为空、类型或格式非法、渠道或状态越界、重试边界为负数或逆序、时间不是 RFC 3339、`start` 不早于 `end`、页码或页大小越界 |
 | 404 | `DELIVERY_RECORD_NOT_FOUND` | 按标识查询不到记录 |
 | 503 | `STORAGE_UNAVAILABLE` | 登记或查询存储暂时不可用；此时不会返回任何声称记录已保存的结果 |
 
