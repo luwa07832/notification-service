@@ -23,6 +23,10 @@ func Open(path string) (*Store, error) {
 		db.Close()
 		return nil, fmt.Errorf("enable wal: %w", err)
 	}
+	if _, err := db.Exec("PRAGMA busy_timeout = 5000"); err != nil {
+		db.Close()
+		return nil, fmt.Errorf("set busy timeout: %w", err)
+	}
 	if _, err := db.Exec(schema); err != nil {
 		db.Close()
 		return nil, fmt.Errorf("apply schema: %w", err)
@@ -41,4 +45,17 @@ CREATE TABLE IF NOT EXISTS service_metadata (
 	key   TEXT PRIMARY KEY,
 	value TEXT NOT NULL
 );
+
+CREATE TABLE IF NOT EXISTS delivery_records (
+	id             TEXT PRIMARY KEY,
+	template_id    TEXT NOT NULL,
+	channel        TEXT NOT NULL,
+	occurred_at    TEXT NOT NULL,
+	status         TEXT NOT NULL,
+	retry_count    INTEGER NOT NULL CHECK (retry_count >= 0),
+	failure_reason TEXT NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_delivery_records_channel_time
+	ON delivery_records (channel, occurred_at);
 `

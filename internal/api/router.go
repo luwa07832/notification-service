@@ -8,8 +8,8 @@ import (
 	"github.com/luwa07832/notification-service/internal/store"
 )
 
-// NewRouter wires the public HTTP surface. Only the health entry is published today; the service
-// contract in README.md describes the error shape every entry must keep.
+// NewRouter wires the public HTTP surface. The README describes the error shape
+// every entry must keep.
 func NewRouter(st *store.Store) *gin.Engine {
 	gin.SetMode(gin.ReleaseMode)
 	router := gin.New()
@@ -22,6 +22,11 @@ func NewRouter(st *store.Store) *gin.Engine {
 		}
 		c.JSON(http.StatusOK, gin.H{"status": "ok", "database": "ok"})
 	})
+
+	deliveryRecords := "/api/v1/delivery-records"
+	router.POST(deliveryRecords, createDeliveryRecord(st))
+	router.GET(deliveryRecords, listDeliveryRecords(st))
+	router.GET(deliveryRecords+"/:id", getDeliveryRecord(st))
 
 	router.NoRoute(func(c *gin.Context) {
 		c.JSON(http.StatusNotFound, gin.H{"error": gin.H{"code": "route_not_found", "message": "no route matches this path"}})
