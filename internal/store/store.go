@@ -31,7 +31,49 @@ func Open(path string) (*Store, error) {
 		db.Close()
 		return nil, fmt.Errorf("apply schema: %w", err)
 	}
+	if err := ensureNotificationIDColumn(db); err != nil {
+		db.Close()
+		return nil, fmt.Errorf("migrate schema: %w", err)
+	}
+	if _, err := db.Exec(notificationIDIndex); err != nil {
+		db.Close()
+		return nil, fmt.Errorf("apply schema: %w", err)
+	}
 	return &Store{db: db}, nil
+}
+
+// ensureNotificationIDColumn adds the notification_id column to database
+// files created before notification tracking existed. Fresh databases already
+// carry the column from the schema below, so the ALTER only runs for files
+// that predate it.
+func ensureNotificationIDColumn(db *sql.DB) error {
+	rows, err := db.Query("PRAGMA table_info(delivery_records)")
+	if err != nil {
+		return err
+	}
+	defer rows.Close()
+
+	for rows.Next() {
+		var (
+			cid     int
+			name    string
+			ctype   string
+			notNull int
+			dflt    sql.NullString
+			pk      int
+		)
+		if err := rows.Scan(&cid, &name, &ctype, &notNull, &dflt, &pk); err != nil {
+			return err
+		}
+		if name == "notification_id" {
+			return nil
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return err
+	}
+	_, err = db.Exec("ALTER TABLE delivery_records ADD COLUMN notification_id TEXT")
+	return err
 }
 
 // Ping reports whether the storage layer is usable.
@@ -47,13 +89,14 @@ CREATE TABLE IF NOT EXISTS service_metadata (
 );
 
 CREATE TABLE IF NOT EXISTS delivery_records (
-	id             TEXT PRIMARY KEY,
-	template_id    TEXT NOT NULL,
-	channel        TEXT NOT NULL,
-	occurred_at    TEXT NOT NULL,
-	status         TEXT NOT NULL,
-	retry_count    INTEGER NOT NULL CHECK (retry_count >= 0),
-	failure_reason TEXT NOT NULL
+	id              TEXT PRIMARY KEY,
+	template_id     TEXT NOT NULL,
+	channel         TEXT NOT NULL,
+	occurred_at     TEXT NOT NULL,
+	status          TEXT NOT NULL,
+	retry_count     INTEGER NOT NULL CHECK (retry_count >= 0),
+	failure_reason  TEXT NOT NULL,
+	notification_id TEXT
 );
 
 CREATE INDEX IF NOT EXISTS idx_delivery_records_channel_time
@@ -66,4 +109,12 @@ CREATE TABLE IF NOT EXISTS notification_templates (
 	channels    TEXT NOT NULL,
 	enabled     INTEGER NOT NULL CHECK (enabled IN (0, 1))
 );
+`
+
+// notificationIDIndex is applied separately, after ensureNotificationIDColumn
+// has added the column to databases created before notification tracking
+// existed; the index cannot be built before the column is there.
+const notificationIDIndex = `
+CREATE INDEX IF NOT EXISTS idx_delivery_records_notification_id
+	ON delivery_records (notification_id);
 `

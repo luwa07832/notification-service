@@ -52,6 +52,7 @@ go run .
 | `status` | string | 投递状态：`pending`、`retrying`、`succeeded`、`failed` |
 | `retry_count` | 非负整数 | 截至本次尝试的重试次数 |
 | `failure_reason` | string | 失败原因；`failed`/`retrying` 必填非空，`pending`/`succeeded` 必须为空 |
+| `notification_id` | string，可选 | 通知实例标识，用于按实例追踪重试链；省略时按原行为登记。提供时非空且无首尾空白 |
 
 成功时 HTTP 201，返回与输入一致的内容和服务生成的唯一标识 `id`，随后可立即按标识查询：
 
@@ -69,7 +70,7 @@ go run .
 
 ### `POST /api/v1/delivery-records/batch`
 
-把同一轮的多次真实投递尝试一次提交、批量登记。请求体使用 `records` 数组，每个元素与单条入口的输入同构（同样的 `template_id`、`channel`、`occurred_at`、`status`、`retry_count`、`failure_reason` 语义与校验规则），每批必须包含 2 到 100 条：
+把同一轮的多次真实投递尝试一次提交、批量登记。请求体使用 `records` 数组，每个元素与单条入口的输入同构（同样的 `template_id`、`channel`、`occurred_at`、`status`、`retry_count`、`failure_reason`、`notification_id` 语义与校验规则，各元素的 `notification_id` 可相同、不同或省略），每批必须包含 2 到 100 条：
 
 ```json
 {
@@ -325,6 +326,41 @@ go run .
 
 对比端点只读，不补造投递尝试、重试或失败原因，也不改变通知发送入口、模板内容、渠道分发、发送结果、重试触发和失败原因保留方式。
 
+### `GET /api/v1/notifications/{notification_id}/delivery-history`
+
+按通知实例追踪重试链：只返回登记时携带该 `notification_id` 的投递尝试，未携带标识的记录不参与。`records` 按 `occurred_at` 升序、同一时刻按 `id` 升序，每条含现有记录字段及 `notification_id`；`summary` 汇总整条重试链：
+
+| 字段 | 说明 |
+|---|---|
+| `total_attempts` | 该通知实例已登记的尝试总数 |
+| `status_counts` | 固定含 `pending`、`retrying`、`succeeded`、`failed` 四项计数，未出现为 0 |
+| `retry_count_min` / `retry_count_max` | 重试次数最小值与最大值；无记录时为 `null` |
+| `first_attempt_at` / `last_attempt_at` | 首次与最近一次尝试的发生时间；无记录时为 `null` |
+| `failure_reasons` | 只统计 `failed` 与 `retrying` 记录的非空失败原因原文，按次数降序、次数相同按原文升序；每项含 `failure_reason` 与 `attempt_count`；无记录时为空数组 |
+
+```json
+{
+  "records": [
+    {"id":"...","template_id":"tpl-1","channel":"sms","occurred_at":"2026-10-01T10:00:00Z","status":"retrying","retry_count":1,"failure_reason":"provider busy","notification_id":"ntf-1"},
+    {"id":"...","template_id":"tpl-1","channel":"sms","occurred_at":"2026-10-01T10:00:05Z","status":"failed","retry_count":2,"failure_reason":"provider timeout","notification_id":"ntf-1"}
+  ],
+  "summary": {
+    "total_attempts": 2,
+    "status_counts": {"pending": 0, "retrying": 1, "succeeded": 0, "failed": 1},
+    "retry_count_min": 1,
+    "retry_count_max": 2,
+    "first_attempt_at": "2026-10-01T10:00:00Z",
+    "last_attempt_at": "2026-10-01T10:00:05Z",
+    "failure_reasons": [
+      {"failure_reason": "provider busy", "attempt_count": 1},
+      {"failure_reason": "provider timeout", "attempt_count": 1}
+    ]
+  }
+}
+```
+
+还没有任何登记记录时返回 HTTP 200 与空 `records`，`summary` 计数为 0、重试与时间上下界为 `null`、`failure_reasons` 为空数组。路径标识为空或全空白返回 HTTP 400 与 `INVALID_NOTIFICATION_ID`；已有登记记录但标识不存在返回 HTTP 404 与 `DELIVERY_RECORD_NOT_FOUND`；存储不可用返回 HTTP 503 与 `STORAGE_UNAVAILABLE`。该查询只读，不补造投递事实。
+
 ### `POST /api/v1/notification-templates`
 
 登记一个通知模板，补齐投递记录中只有 `template_id` 时缺少的名称、正文和支持渠道。模板登记是终止性的：登记后不提供修改或删除入口。
@@ -422,7 +458,8 @@ go run .
 | 400 | `INVALID_DELIVERY_TREND` | 趋势查询校验失败：缺少或非法的 `channel`/`start`/`end`/`interval`、时间不是 RFC 3339、`start` 不早于 `end`、`start`/`end` 未落在桶边界、`template_id` 显式为空白 |
 | 400 | `INVALID_DELIVERY_COMPARISON` | 跨渠道对比校验失败：`channels` 缺失、数量不在 2–4 个、含未知或重复渠道、含空白，`start`/`end` 缺失或不是 RFC 3339、`start` 不早于 `end`、`template_id` 显式为空白 |
 | 400 | `INVALID_TEMPLATE_REQUEST` | 模板登记或列表过滤校验失败：`template_id`/`name` 去空白后为空、`body` 无非空白字符、`channels` 数量不在 1–4 个、含未知或重复渠道或带空白、`enabled` 缺失或不是布尔值；列表的 `channel`/`enabled` 不是合法精确值 |
-| 404 | `DELIVERY_RECORD_NOT_FOUND` | 按标识查询不到记录 |
+| 400 | `INVALID_NOTIFICATION_ID` | 投递历史查询的路径通知标识为空或全空白 |
+| 404 | `DELIVERY_RECORD_NOT_FOUND` | 按标识查询不到记录，或已有登记记录但按通知标识查询不到投递历史 |
 | 404 | `TEMPLATE_NOT_FOUND` | 按标识查询不到模板，或路径中的 `template_id` 为空白 |
 | 409 | `TEMPLATE_ALREADY_EXISTS` | 登记模板时 `template_id` 已存在；已存模板保持不变 |
 | 503 | `STORAGE_UNAVAILABLE` | 登记或查询存储暂时不可用；此时不会返回任何声称记录已保存的结果 |

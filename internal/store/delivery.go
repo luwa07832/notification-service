@@ -61,10 +61,10 @@ func insertDeliveryRecord(ctx context.Context, execer deliveryRecordExecer, reco
 	storedAt := record.OccurredAt.UTC().Format(storedTimeFormat)
 	_, err := execer.ExecContext(ctx,
 		`INSERT INTO delivery_records
-		    (id, template_id, channel, occurred_at, status, retry_count, failure_reason)
-		  VALUES (?, ?, ?, ?, ?, ?, ?)`,
+		    (id, template_id, channel, occurred_at, status, retry_count, failure_reason, notification_id)
+		  VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
 		record.ID, record.TemplateID, record.Channel, storedAt,
-		record.Status, record.RetryCount, record.FailureReason,
+		record.Status, record.RetryCount, record.FailureReason, record.NotificationID,
 	)
 	return err
 }
@@ -73,7 +73,7 @@ func insertDeliveryRecord(ctx context.Context, execer deliveryRecordExecer, reco
 // exists; that is not a storage failure.
 func (s *Store) GetDeliveryRecord(ctx context.Context, id string) (delivery.Record, bool, error) {
 	row := s.db.QueryRowContext(ctx,
-		`SELECT id, template_id, channel, occurred_at, status, retry_count, failure_reason
+		`SELECT id, template_id, channel, occurred_at, status, retry_count, failure_reason, notification_id
 		   FROM delivery_records WHERE id = ?`, id)
 
 	record, err := scanDeliveryRecord(row)
@@ -91,7 +91,7 @@ func (s *Store) GetDeliveryRecord(ctx context.Context, id string) (delivery.Reco
 // occurrence time ascending.
 func (s *Store) ListDeliveryRecords(ctx context.Context, query delivery.Query) ([]delivery.Record, error) {
 	rows, err := s.db.QueryContext(ctx,
-		`SELECT id, template_id, channel, occurred_at, status, retry_count, failure_reason
+		`SELECT id, template_id, channel, occurred_at, status, retry_count, failure_reason, notification_id
 		   FROM delivery_records
 		  WHERE channel = ? AND occurred_at >= ? AND occurred_at < ?
 		  ORDER BY occurred_at ASC, id ASC`,
@@ -125,9 +125,10 @@ type rowScanner interface {
 func scanDeliveryRecord(scanner rowScanner) (delivery.Record, error) {
 	var record delivery.Record
 	var occurredAt string
+	var notificationID sql.NullString
 	if err := scanner.Scan(
 		&record.ID, &record.TemplateID, &record.Channel, &occurredAt,
-		&record.Status, &record.RetryCount, &record.FailureReason,
+		&record.Status, &record.RetryCount, &record.FailureReason, &notificationID,
 	); err != nil {
 		return delivery.Record{}, err
 	}
@@ -136,5 +137,9 @@ func scanDeliveryRecord(scanner rowScanner) (delivery.Record, error) {
 		return delivery.Record{}, err
 	}
 	record.OccurredAt = parsedAt.UTC()
+	if notificationID.Valid {
+		value := notificationID.String
+		record.NotificationID = &value
+	}
 	return record, nil
 }
