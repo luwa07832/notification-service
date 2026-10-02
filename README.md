@@ -199,6 +199,58 @@ go run .
 
 概览端点只读，不写入或修改记录、不补齐未登记的尝试，也不改变通知发送入口、模板内容、渠道分发、重试触发、记录写入和历史失败原因的保留方式。
 
+### `GET /api/v1/delivery-records/trend`
+
+只读的投递趋势查询，观察同一渠道在连续时间段内投递结果、失败原因和重试次数的变化。`channel`、`start`、`end` 必填且与基础查询同口径：限定单个渠道与半开区间 `start <= occurred_at < end`，时间参数为 RFC 3339 且 `start` 必须早于 `end`。`interval` 必填，只接受 `hour` 或 `day`：按 UTC 整点或 UTC 自然日切桶，且 `start`、`end` 必须落在桶边界上。
+
+| 参数 | 说明 |
+|---|---|
+| `channel`（必填） | `sms`、`email`、`push`、`in_app` 之一 |
+| `start`（必填） | 范围起点（含），RFC 3339，必须对齐桶边界 |
+| `end`（必填） | 范围终点（不含），RFC 3339，必须晚于 `start` 且对齐桶边界 |
+| `interval`（必填） | `hour`（UTC 整点桶）或 `day`（UTC 自然日桶） |
+| `template_id`（可选） | 按去除首尾空白后的模板标识精确匹配；显式传入空白值视为非法 |
+
+响应为单个 JSON 对象，`buckets` 按 `bucket_start` 升序覆盖区间内的全部连续桶（包括没有任何尝试的空桶），`total_buckets` 等于 `buckets` 的数量。每个桶包含：
+
+| 字段 | 说明 |
+|---|---|
+| `bucket_start` / `bucket_end` | 桶的 UTC RFC 3339 起止时刻，区间为半开 `[bucket_start, bucket_end)` |
+| `total_attempts` | 桶内已登记尝试总数；空桶为 0 |
+| `status_counts` | 固定包含 `pending`、`retrying`、`succeeded`、`failed` 四项计数，空桶全为 0 |
+| `failure_reasons` | 仅统计桶内 `failed`/`retrying` 记录的非空失败原因原文，不折叠大小写、空白或同义词；按 `attempt_count` 降序、原因原文升序，空桶为空数组 |
+| `retry_count_min` / `retry_count_max` | 桶内重试次数的最小值与最大值；空桶均为 `null` |
+
+```json
+{
+  "buckets": [
+    {
+      "bucket_start": "2026-10-01T10:00:00Z",
+      "bucket_end": "2026-10-01T11:00:00Z",
+      "total_attempts": 3,
+      "status_counts": {"pending": 0, "retrying": 1, "succeeded": 1, "failed": 1},
+      "failure_reasons": [
+        {"failure_reason": "Timeout", "attempt_count": 2}
+      ],
+      "retry_count_min": 0,
+      "retry_count_max": 2
+    },
+    {
+      "bucket_start": "2026-10-01T11:00:00Z",
+      "bucket_end": "2026-10-01T12:00:00Z",
+      "total_attempts": 0,
+      "status_counts": {"pending": 0, "retrying": 0, "succeeded": 0, "failed": 0},
+      "failure_reasons": [],
+      "retry_count_min": null,
+      "retry_count_max": null
+    }
+  ],
+  "total_buckets": 2
+}
+```
+
+趋势端点只读，只统计已登记尝试，不补造尝试或失败原因，不写入或修改记录，也不改变通知发送入口、模板内容、渠道分发、重试触发、记录写入和历史失败原因的保留方式。存储不可用时返回 HTTP 503 与 `STORAGE_UNAVAILABLE`，不会返回部分结果。
+
 ## 错误约定
 
 所有错误响应都是单个顶层 `error` 对象，包含 `code` 与 `message` 两个字符串字段；`message` 不包含 SQL、堆栈或文件路径。
@@ -210,6 +262,7 @@ go run .
 | 400 | `INVALID_DELIVERY_SEARCH` | 高级检索校验失败：缺少或非法的 `channel`/`start`/`end`、时间不是 RFC 3339、`start` 不早于 `end`、渠道或 `status` 越界、可选条件为空值、`retry_min`/`retry_max` 为负数或逆序、`page` 小于 1、`page_size` 超出 1–200 或类型格式非法 |
 | 400 | `INVALID_DELIVERY_SUMMARY` | 失败原因汇总校验失败：缺少或非法的 `channel`/`start`/`end`、时间不是 RFC 3339、`start` 不早于 `end`、`template_id` 显式为空 |
 | 400 | `INVALID_DELIVERY_OVERVIEW` | 投递概览校验失败：缺少或非法的 `channel`/`start`/`end`、时间不是 RFC 3339、`start` 不早于 `end`、渠道越界、`template_id` 显式为空白 |
+| 400 | `INVALID_DELIVERY_TREND` | 投递趋势校验失败：缺少或非法的 `channel`/`start`/`end`、时间不是 RFC 3339、`start` 不早于 `end`、渠道越界、`interval` 不是 `hour`/`day`、`start`/`end` 未对齐桶边界、`template_id` 显式为空白 |
 | 404 | `DELIVERY_RECORD_NOT_FOUND` | 按标识查询不到记录 |
 | 503 | `STORAGE_UNAVAILABLE` | 登记或查询存储暂时不可用；此时不会返回任何声称记录已保存的结果 |
 
