@@ -326,6 +326,49 @@ go run .
 
 对比端点只读，不补造投递尝试、重试或失败原因，也不改变通知发送入口、模板内容、渠道分发、发送结果、重试触发和失败原因保留方式。
 
+### `GET /api/v1/delivery-records/template-alignment`
+
+只读的渠道配置一致性核对，用于在追踪失败原因时找出投递渠道与当前模板登记不一致的既有记录。`channel`、`start`、`end` 必填且与基础查询同口径：渠道仅限 `sms`、`email`、`push`、`in_app`，时间范围为半开区间 `start <= occurred_at < end`，时间参数为 RFC 3339 且 `start` 必须早于 `end`。
+
+| 参数 | 说明 |
+|---|---|
+| `channel`（必填） | `sms`、`email`、`push`、`in_app` 之一 |
+| `start`（必填） | 范围起点（含），RFC 3339 |
+| `end`（必填） | 范围终点（不含），RFC 3339，且必须严格晚于 `start` |
+| `template_id`（可选） | 按去除首尾空白后的模板标识精确匹配；显式传入空白值视为非法 |
+| `page` | 页码，从 1 开始，缺省为 1 |
+| `page_size` | 每页条数，缺省 50，范围 1 到 200 |
+
+对范围内每条既有记录，按当前 `notification_templates` 登记判定唯一一个 `issue_code`，优先级依次为：
+
+| issue_code | 触发条件 |
+|---|---|
+| `template_missing` | 不存在相同 `template_id` 的模板 |
+| `channel_unsupported` | 模板存在，但其 `channels` 不含记录的渠道 |
+| `template_disabled` | 模板支持该渠道，但 `enabled` 为 `false` |
+
+模板存在、支持该渠道且已启用的记录完全一致，不出现在结果中。结果按 `occurred_at` 升序、同一时刻按 `id` 升序排列。响应包含 `issues` 与 `pagination`，每项含 `id`、`template_id`、`channel`、`occurred_at`、`status`、`retry_count`、`failure_reason` 和 `issue_code`；`total` 是分页前全部不一致记录的准确数量：
+
+```json
+{
+  "issues": [
+    {
+      "id": "f1c2e0d4-9b72-4e6a-8c11-6b2a4f3d0a11",
+      "template_id": "tpl-1",
+      "channel": "sms",
+      "occurred_at": "2026-10-01T10:00:05Z",
+      "status": "failed",
+      "retry_count": 2,
+      "failure_reason": "provider timeout",
+      "issue_code": "channel_unsupported"
+    }
+  ],
+  "pagination": {"page": 1, "page_size": 50, "total": 1}
+}
+```
+
+没有不一致记录时仍返回 HTTP 200，`issues` 为空数组、`total` 为 0。该端点只把既有记录与当前模板登记做核对，不发送通知、不渲染模板、不触发重试、不改写任何数据，也不改变历史失败原因。
+
 ### `GET /api/v1/notifications/{notification_id}/delivery-history`
 
 按通知实例追踪重试链：只返回登记时携带该 `notification_id` 的投递尝试，未携带标识的记录不参与。`records` 按 `occurred_at` 升序、同一时刻按 `id` 升序，每条含现有记录字段及 `notification_id`；`summary` 汇总整条重试链：
@@ -457,6 +500,7 @@ go run .
 | 400 | `INVALID_DELIVERY_OVERVIEW` | 投递概览校验失败：缺少或非法的 `channel`/`start`/`end`、时间不是 RFC 3339、`start` 不早于 `end`、渠道越界、`template_id` 显式为空白 |
 | 400 | `INVALID_DELIVERY_TREND` | 趋势查询校验失败：缺少或非法的 `channel`/`start`/`end`/`interval`、时间不是 RFC 3339、`start` 不早于 `end`、`start`/`end` 未落在桶边界、`template_id` 显式为空白 |
 | 400 | `INVALID_DELIVERY_COMPARISON` | 跨渠道对比校验失败：`channels` 缺失、数量不在 2–4 个、含未知或重复渠道、含空白，`start`/`end` 缺失或不是 RFC 3339、`start` 不早于 `end`、`template_id` 显式为空白 |
+| 400 | `INVALID_TEMPLATE_ALIGNMENT_QUERY` | 模板一致性核对校验失败：缺少或非法的 `channel`/`start`/`end`、时间不是 RFC 3339、`start` 不早于 `end`、`template_id` 显式为空白、`page` 小于 1、`page_size` 超出 1–200 或类型格式非法 |
 | 400 | `INVALID_TEMPLATE_REQUEST` | 模板登记或列表过滤校验失败：`template_id`/`name` 去空白后为空、`body` 无非空白字符、`channels` 数量不在 1–4 个、含未知或重复渠道或带空白、`enabled` 缺失或不是布尔值；列表的 `channel`/`enabled` 不是合法精确值 |
 | 400 | `INVALID_NOTIFICATION_ID` | 投递历史查询的路径通知标识为空或全空白 |
 | 404 | `DELIVERY_RECORD_NOT_FOUND` | 按标识查询不到记录，或已有登记记录但按通知标识查询不到投递历史 |
