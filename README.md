@@ -199,6 +199,58 @@ go run .
 
 概览端点只读，不写入或修改记录、不补齐未登记的尝试，也不改变通知发送入口、模板内容、渠道分发、重试触发、记录写入和历史失败原因的保留方式。
 
+### `GET /api/v1/delivery-records/trend`
+
+只读的投递趋势查询，把同一渠道在半开区间 `start <= occurred_at < end` 内的已登记尝试切分成连续的 UTC 时间桶，观察投递结果、失败原因和重试次数随时间的变化。`channel`、`start`、`end`、`interval` 必填，时间参数为 RFC 3339 且 `start` 必须早于 `end`。
+
+| 参数 | 说明 |
+|---|---|
+| `channel`（必填） | `sms`、`email`、`push`、`in_app` 之一 |
+| `start`（必填） | 范围起点（含），RFC 3339，换算到 UTC 后必须落在桶边界 |
+| `end`（必填） | 范围终点（不含），RFC 3339，必须晚于 `start`，换算到 UTC 后必须落在桶边界 |
+| `interval`（必填） | `hour` 按 UTC 整点切桶，`day` 按 UTC 自然日切桶 |
+| `template_id`（可选） | 按去除首尾空白后的模板标识精确匹配；显式传入空白值视为非法 |
+
+响应为单个 JSON 对象，`buckets` 按 `bucket_start` 升序覆盖范围内每一个连续桶，没有任何尝试的桶也按全零返回；`total_buckets` 等于 `buckets` 的数量。每项包含：
+
+| 字段 | 说明 |
+|---|---|
+| `bucket_start` / `bucket_end` | 桶的半开区间边界，UTC RFC 3339 |
+| `total_attempts` | 桶内已登记尝试总数 |
+| `status_counts` | 固定包含 `pending`、`retrying`、`succeeded`、`failed` 四项计数，未出现的状态计数为 0 |
+| `failure_reasons` | 仅统计桶内 `failed`/`retrying` 的非空失败原因原文，不折叠大小写、空白或同义词，按次数降序、次数相同按原文升序，每项含 `failure_reason` 与 `attempt_count` |
+| `retry_count_min` / `retry_count_max` | 桶内重试次数的最小值与最大值；空桶为 `null` |
+
+```json
+{
+  "buckets": [
+    {
+      "bucket_start": "2026-10-01T10:00:00Z",
+      "bucket_end": "2026-10-01T11:00:00Z",
+      "total_attempts": 2,
+      "status_counts": {"pending": 0, "retrying": 1, "succeeded": 0, "failed": 1},
+      "failure_reasons": [
+        {"failure_reason": "Timeout", "attempt_count": 2}
+      ],
+      "retry_count_min": 1,
+      "retry_count_max": 2
+    },
+    {
+      "bucket_start": "2026-10-01T11:00:00Z",
+      "bucket_end": "2026-10-01T12:00:00Z",
+      "total_attempts": 0,
+      "status_counts": {"pending": 0, "retrying": 0, "succeeded": 0, "failed": 0},
+      "failure_reasons": [],
+      "retry_count_min": null,
+      "retry_count_max": null
+    }
+  ],
+  "total_buckets": 2
+}
+```
+
+趋势端点只读，只统计已登记的尝试，不补造尝试或失败原因，也不改变通知发送入口、模板内容、渠道分发、重试触发、记录写入和历史失败原因的保留方式。
+
 ## 错误约定
 
 所有错误响应都是单个顶层 `error` 对象，包含 `code` 与 `message` 两个字符串字段；`message` 不包含 SQL、堆栈或文件路径。
@@ -210,6 +262,7 @@ go run .
 | 400 | `INVALID_DELIVERY_SEARCH` | 高级检索校验失败：缺少或非法的 `channel`/`start`/`end`、时间不是 RFC 3339、`start` 不早于 `end`、渠道或 `status` 越界、可选条件为空值、`retry_min`/`retry_max` 为负数或逆序、`page` 小于 1、`page_size` 超出 1–200 或类型格式非法 |
 | 400 | `INVALID_DELIVERY_SUMMARY` | 失败原因汇总校验失败：缺少或非法的 `channel`/`start`/`end`、时间不是 RFC 3339、`start` 不早于 `end`、`template_id` 显式为空 |
 | 400 | `INVALID_DELIVERY_OVERVIEW` | 投递概览校验失败：缺少或非法的 `channel`/`start`/`end`、时间不是 RFC 3339、`start` 不早于 `end`、渠道越界、`template_id` 显式为空白 |
+| 400 | `INVALID_DELIVERY_TREND` | 趋势查询校验失败：缺少或非法的 `channel`/`start`/`end`/`interval`、时间不是 RFC 3339、`start` 不早于 `end`、`start`/`end` 未落在桶边界、`template_id` 显式为空白 |
 | 404 | `DELIVERY_RECORD_NOT_FOUND` | 按标识查询不到记录 |
 | 503 | `STORAGE_UNAVAILABLE` | 登记或查询存储暂时不可用；此时不会返回任何声称记录已保存的结果 |
 
