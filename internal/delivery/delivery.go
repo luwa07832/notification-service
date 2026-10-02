@@ -54,26 +54,34 @@ const (
 
 // RecordInput is the payload submitted through the public write entry.
 // RetryCount is a pointer so a missing or null value is rejected the same
-// way as a non-integer value.
+// way as a non-integer value. NotificationID is optional: nil (a missing or
+// null field) keeps the historical behavior of registering an untracked
+// attempt, while a present value must be non-empty with no surrounding
+// whitespace and identifies the notification instance the attempt belongs to.
 type RecordInput struct {
-	TemplateID    string `json:"template_id"`
-	Channel       string `json:"channel"`
-	OccurredAt    string `json:"occurred_at"`
-	Status        string `json:"status"`
-	RetryCount    *int   `json:"retry_count"`
-	FailureReason string `json:"failure_reason"`
+	TemplateID     string  `json:"template_id"`
+	Channel        string  `json:"channel"`
+	OccurredAt     string  `json:"occurred_at"`
+	Status         string  `json:"status"`
+	RetryCount     *int    `json:"retry_count"`
+	FailureReason  string  `json:"failure_reason"`
+	NotificationID *string `json:"notification_id"`
 }
 
 // Record is a successfully registered delivery attempt. Every attempt is an
 // independent row; repeated notifications never overwrite earlier records.
+// NotificationID stays empty for attempts registered without the optional
+// instance identifier, in which case the JSON field is omitted so legacy
+// responses keep their exact shape.
 type Record struct {
-	ID            string    `json:"id"`
-	TemplateID    string    `json:"template_id"`
-	Channel       string    `json:"channel"`
-	OccurredAt    time.Time `json:"occurred_at"`
-	Status        string    `json:"status"`
-	RetryCount    int       `json:"retry_count"`
-	FailureReason string    `json:"failure_reason"`
+	ID             string    `json:"id"`
+	TemplateID     string    `json:"template_id"`
+	Channel        string    `json:"channel"`
+	OccurredAt     time.Time `json:"occurred_at"`
+	Status         string    `json:"status"`
+	RetryCount     int       `json:"retry_count"`
+	FailureReason  string    `json:"failure_reason"`
+	NotificationID string    `json:"notification_id,omitempty"`
 }
 
 // NewRecord validates input and builds the record as it will be stored. The id
@@ -106,13 +114,21 @@ func NewRecord(in RecordInput) (Record, error) {
 			return Record{}, ErrInvalidRecord
 		}
 	}
+	var notificationID string
+	if in.NotificationID != nil {
+		notificationID = *in.NotificationID
+		if notificationID == "" || notificationID != strings.TrimSpace(notificationID) {
+			return Record{}, ErrInvalidRecord
+		}
+	}
 	return Record{
-		TemplateID:    templateID,
-		Channel:       in.Channel,
-		OccurredAt:    occurredAt.UTC(),
-		Status:        in.Status,
-		RetryCount:    *in.RetryCount,
-		FailureReason: in.FailureReason,
+		TemplateID:     templateID,
+		Channel:        in.Channel,
+		OccurredAt:     occurredAt.UTC(),
+		Status:         in.Status,
+		RetryCount:     *in.RetryCount,
+		FailureReason:  in.FailureReason,
+		NotificationID: notificationID,
 	}, nil
 }
 

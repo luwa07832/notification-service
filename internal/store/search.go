@@ -66,7 +66,7 @@ func (s *Store) SearchDeliveryRecords(ctx context.Context, search delivery.Searc
 	pageArgs = append(pageArgs, limit, offset)
 
 	rows, err := s.db.QueryContext(ctx,
-		`SELECT id, template_id, channel, occurred_at, status, retry_count, failure_reason
+		`SELECT id, template_id, channel, occurred_at, status, retry_count, failure_reason, notification_id
 		   FROM delivery_records
 		  WHERE `+filter+`
 		  ORDER BY occurred_at ASC, id ASC

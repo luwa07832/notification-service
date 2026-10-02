@@ -52,8 +52,9 @@ go run .
 | `status` | string | 投递状态：`pending`、`retrying`、`succeeded`、`failed` |
 | `retry_count` | 非负整数 | 截至本次尝试的重试次数 |
 | `failure_reason` | string | 失败原因；`failed`/`retrying` 必填非空，`pending`/`succeeded` 必须为空 |
+| `notification_id` | string，可选 | 通知实例标识，用于追踪同一通知的完整重试链；省略或为 `null` 时按原行为登记为不归属任何实例的尝试；提供时必须非空且不含首尾空白 |
 
-成功时 HTTP 201，返回与输入一致的内容和服务生成的唯一标识 `id`，随后可立即按标识查询：
+成功时 HTTP 201，返回与输入一致的内容和服务生成的唯一标识 `id`，随后可立即按标识查询。提供了 `notification_id` 时响应中包含同样的字段；省略时响应与历史形态完全一致（不含该字段）：
 
 ```json
 {
@@ -69,7 +70,7 @@ go run .
 
 ### `POST /api/v1/delivery-records/batch`
 
-把同一轮的多次真实投递尝试一次提交、批量登记。请求体使用 `records` 数组，每个元素与单条入口的输入同构（同样的 `template_id`、`channel`、`occurred_at`、`status`、`retry_count`、`failure_reason` 语义与校验规则），每批必须包含 2 到 100 条：
+把同一轮的多次真实投递尝试一次提交、批量登记。请求体使用 `records` 数组，每个元素与单条入口的输入同构（同样的 `template_id`、`channel`、`occurred_at`、`status`、`retry_count`、`failure_reason` 与可选 `notification_id` 的语义及校验规则），每批必须包含 2 到 100 条。不同元素的 `notification_id` 可以相同（同一通知的多个重试）或不同（不同通知）：
 
 ```json
 {
@@ -89,7 +90,40 @@ go run .
 ]}
 ```
 
-只要 JSON 不合法、`records` 缺失或不是数组、条数不在 2 到 100、任一元素不满足单条校验规则，整批都不登记，统一返回 HTTP 400 与错误码 `INVALID_DELIVERY_BATCH`。整批写入在单个事务内完成：存储不可用或无法完整提交时返回 HTTP 503 与 `STORAGE_UNAVAILABLE`，失败批次不会留下部分记录。写入成功的记录立即可由按标识、渠道时间范围、失败检索与各汇总入口读取，排序、分页与统计口径不变。批量入口只登记调用方声明已发生的投递尝试，不触发通知发送、模板渲染或重试，也不改变单条入口的响应或错误。
+只要 JSON 不合法、`records` 缺失或不是数组、条数不在 2 到 100、任一元素不满足单条校验规则（含 `notification_id` 为空或带首尾空白），整批都不登记，统一返回 HTTP 400 与错误码 `INVALID_DELIVERY_BATCH`。整批写入在单个事务内完成：存储不可用或无法完整提交时返回 HTTP 503 与 `STORAGE_UNAVAILABLE`，失败批次不会留下部分记录。写入成功的记录立即可由按标识、渠道时间范围、失败检索与各汇总入口读取，排序、分页与统计口径不变。批量入口只登记调用方声明已发生的投递尝试，不触发通知发送、模板渲染或重试，也不改变单条入口的响应或错误。
+
+### `GET /api/v1/notifications/{notification_id}/delivery-history`
+
+按通知实例标识追踪该通知的完整重试链，只返回带该标识登记的投递尝试；省略 `notification_id` 登记的尝试和属于其他实例的尝试都不会出现。路径中的标识会去除首尾空白后匹配；路径标识缺失或全部为空白时返回 HTTP 400 与 `INVALID_NOTIFICATION_ID`。
+
+`records` 按 `occurred_at` 升序排列，同一时刻按记录 `id` 升序；每条记录包含单条记录的全部字段以及登记时的 `notification_id`。`summary` 的含义：
+
+| 字段 | 说明 |
+|---|---|
+| `total_attempts` | 该实例已登记尝试总数 |
+| `status_counts` | 固定包含 `pending`、`retrying`、`succeeded`、`failed` 四个键，未出现的状态计数为 0 |
+| `retry_count_min` / `retry_count_max` | 重试次数的最小、最大值；无记录时为 `null` |
+| `first_attempt_at` / `last_attempt_at` | 最早、最晚一次尝试的 RFC 3339 时间（按上述排序口径）；无记录时为 `null` |
+| `failure_reasons` | 只统计 `failed` 与 `retrying` 记录的非空失败原因原文（不做大小写折叠或空白归一化），按次数降序、次数相同按原文升序，每项形如 `{"failure_reason":"...","attempt_count":2}`；无失败原因时为 `[]` |
+
+```json
+{"records":[
+  {"id":"...","template_id":"tpl-1","channel":"sms","occurred_at":"2026-10-01T10:00:00Z","status":"pending","retry_count":0,"failure_reason":"","notification_id":"notif-1"},
+  {"id":"...","template_id":"tpl-1","channel":"sms","occurred_at":"2026-10-01T10:00:05Z","status":"retrying","retry_count":1,"failure_reason":"provider busy","notification_id":"notif-1"},
+  {"id":"...","template_id":"tpl-1","channel":"sms","occurred_at":"2026-10-01T10:00:10Z","status":"failed","retry_count":2,"failure_reason":"provider timeout","notification_id":"notif-1"}
+],"summary":{
+  "total_attempts":3,
+  "status_counts":{"pending":1,"retrying":1,"succeeded":0,"failed":1},
+  "retry_count_min":0,"retry_count_max":2,
+  "first_attempt_at":"2026-10-01T10:00:00Z","last_attempt_at":"2026-10-01T10:00:10Z",
+  "failure_reasons":[
+    {"failure_reason":"provider busy","attempt_count":1},
+    {"failure_reason":"provider timeout","attempt_count":1}
+  ]
+}}
+```
+
+标识下没有任何已登记尝试时 HTTP 200 返回空 `records` 与零计数、`null` 上下界、空 `failure_reasons` 的汇总；实例标识不存在时返回 HTTP 404 与 `DELIVERY_RECORD_NOT_FOUND`；存储不可用时返回 HTTP 503 与 `STORAGE_UNAVAILABLE`。该入口只读，不会补造或推断任何投递事实。
 
 ### `GET /api/v1/delivery-records/{id}`
 
@@ -413,8 +447,9 @@ go run .
 
 | HTTP | code | 触发场景 |
 |---|---|---|
-| 400 | `INVALID_DELIVERY_RECORD` | 写入校验失败：渠道不存在、状态非法、`retry_count` 缺失或不是非负整数、`failed`/`retrying` 缺少失败原因、`pending`/`succeeded` 携带失败原因、时间格式非法 |
-| 400 | `INVALID_DELIVERY_BATCH` | 批量登记校验失败：JSON 不合法、`records` 缺失或不是数组、条数不在 2–100、任一元素不满足单条记录校验规则；整批均不登记 |
+| 400 | `INVALID_DELIVERY_RECORD` | 写入校验失败：渠道不存在、状态非法、`retry_count` 缺失或不是非负整数、`failed`/`retrying` 缺少失败原因、`pending`/`succeeded` 携带失败原因、时间格式非法、`notification_id` 显式为空或带首尾空白 |
+| 400 | `INVALID_DELIVERY_BATCH` | 批量登记校验失败：JSON 不合法、`records` 缺失或不是数组、条数不在 2–100、任一元素不满足单条记录校验规则（含 `notification_id` 为空或带首尾空白）；整批均不登记 |
+| 400 | `INVALID_NOTIFICATION_ID` | 通知实例投递历史查询校验失败：路径中的 `notification_id` 为空或全部为空白 |
 | 400 | `INVALID_DELIVERY_QUERY` | 查询校验失败：渠道不存在、时间格式非法、`start` 不早于 `end`、缺少时间参数 |
 | 400 | `INVALID_DELIVERY_SEARCH` | 高级检索校验失败：缺少或非法的 `channel`/`start`/`end`、时间不是 RFC 3339、`start` 不早于 `end`、渠道或 `status` 越界、可选条件为空值、`retry_min`/`retry_max` 为负数或逆序、`page` 小于 1、`page_size` 超出 1–200 或类型格式非法 |
 | 400 | `INVALID_DELIVERY_SUMMARY` | 失败原因汇总校验失败：缺少或非法的 `channel`/`start`/`end`、时间不是 RFC 3339、`start` 不早于 `end`、`template_id` 显式为空 |
@@ -422,7 +457,7 @@ go run .
 | 400 | `INVALID_DELIVERY_TREND` | 趋势查询校验失败：缺少或非法的 `channel`/`start`/`end`/`interval`、时间不是 RFC 3339、`start` 不早于 `end`、`start`/`end` 未落在桶边界、`template_id` 显式为空白 |
 | 400 | `INVALID_DELIVERY_COMPARISON` | 跨渠道对比校验失败：`channels` 缺失、数量不在 2–4 个、含未知或重复渠道、含空白，`start`/`end` 缺失或不是 RFC 3339、`start` 不早于 `end`、`template_id` 显式为空白 |
 | 400 | `INVALID_TEMPLATE_REQUEST` | 模板登记或列表过滤校验失败：`template_id`/`name` 去空白后为空、`body` 无非空白字符、`channels` 数量不在 1–4 个、含未知或重复渠道或带空白、`enabled` 缺失或不是布尔值；列表的 `channel`/`enabled` 不是合法精确值 |
-| 404 | `DELIVERY_RECORD_NOT_FOUND` | 按标识查询不到记录 |
+| 404 | `DELIVERY_RECORD_NOT_FOUND` | 按投递记录标识查询不到记录，或通知实例标识下没有任何已登记投递尝试 |
 | 404 | `TEMPLATE_NOT_FOUND` | 按标识查询不到模板，或路径中的 `template_id` 为空白 |
 | 409 | `TEMPLATE_ALREADY_EXISTS` | 登记模板时 `template_id` 已存在；已存模板保持不变 |
 | 503 | `STORAGE_UNAVAILABLE` | 登记或查询存储暂时不可用；此时不会返回任何声称记录已保存的结果 |

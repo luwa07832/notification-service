@@ -34,6 +34,9 @@ func NewRouter(st *store.Store) *gin.Engine {
 	router.GET(deliveryRecords+"/channel-comparison", channelComparison(st))
 	router.GET(deliveryRecords+"/:id", getDeliveryRecord(st))
 
+	notifications := "/api/v1/notifications"
+	router.GET(notifications+"/:notification_id/delivery-history", notificationDeliveryHistory(st))
+
 	notificationTemplates := "/api/v1/notification-templates"
 	router.POST(notificationTemplates, createNotificationTemplate(st))
 	router.GET(notificationTemplates, listNotificationTemplates(st))

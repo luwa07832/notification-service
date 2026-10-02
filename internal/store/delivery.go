@@ -61,10 +61,11 @@ func insertDeliveryRecord(ctx context.Context, execer deliveryRecordExecer, reco
 	storedAt := record.OccurredAt.UTC().Format(storedTimeFormat)
 	_, err := execer.ExecContext(ctx,
 		`INSERT INTO delivery_records
-		    (id, template_id, channel, occurred_at, status, retry_count, failure_reason)
-		  VALUES (?, ?, ?, ?, ?, ?, ?)`,
+		    (id, template_id, channel, occurred_at, status, retry_count, failure_reason, notification_id)
+		  VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
 		record.ID, record.TemplateID, record.Channel, storedAt,
 		record.Status, record.RetryCount, record.FailureReason,
+		nullableNotificationID(record.NotificationID),
 	)
 	return err
 }
@@ -73,7 +74,7 @@ func insertDeliveryRecord(ctx context.Context, execer deliveryRecordExecer, reco
 // exists; that is not a storage failure.
 func (s *Store) GetDeliveryRecord(ctx context.Context, id string) (delivery.Record, bool, error) {
 	row := s.db.QueryRowContext(ctx,
-		`SELECT id, template_id, channel, occurred_at, status, retry_count, failure_reason
+		`SELECT id, template_id, channel, occurred_at, status, retry_count, failure_reason, notification_id
 		   FROM delivery_records WHERE id = ?`, id)
 
 	record, err := scanDeliveryRecord(row)
@@ -91,7 +92,7 @@ func (s *Store) GetDeliveryRecord(ctx context.Context, id string) (delivery.Reco
 // occurrence time ascending.
 func (s *Store) ListDeliveryRecords(ctx context.Context, query delivery.Query) ([]delivery.Record, error) {
 	rows, err := s.db.QueryContext(ctx,
-		`SELECT id, template_id, channel, occurred_at, status, retry_count, failure_reason
+		`SELECT id, template_id, channel, occurred_at, status, retry_count, failure_reason, notification_id
 		   FROM delivery_records
 		  WHERE channel = ? AND occurred_at >= ? AND occurred_at < ?
 		  ORDER BY occurred_at ASC, id ASC`,
@@ -125,9 +126,10 @@ type rowScanner interface {
 func scanDeliveryRecord(scanner rowScanner) (delivery.Record, error) {
 	var record delivery.Record
 	var occurredAt string
+	var notificationID sql.NullString
 	if err := scanner.Scan(
 		&record.ID, &record.TemplateID, &record.Channel, &occurredAt,
-		&record.Status, &record.RetryCount, &record.FailureReason,
+		&record.Status, &record.RetryCount, &record.FailureReason, &notificationID,
 	); err != nil {
 		return delivery.Record{}, err
 	}
@@ -136,5 +138,48 @@ func scanDeliveryRecord(scanner rowScanner) (delivery.Record, error) {
 		return delivery.Record{}, err
 	}
 	record.OccurredAt = parsedAt.UTC()
+	record.NotificationID = notificationID.String
 	return record, nil
+}
+
+func nullableNotificationID(notificationID string) any {
+	if notificationID == "" {
+		return nil
+	}
+	return notificationID
+}
+
+// ListNotificationDeliveryHistory returns every registered attempt carrying
+// the given notification instance identifier, ordered by occurred_at ascending
+// with ties broken by id ascending. The boolean is false when the instance has
+// no registered attempt; that is not a storage failure. The query is
+// read-only and only returns attempts the caller actually registered.
+func (s *Store) ListNotificationDeliveryHistory(ctx context.Context, notificationID string) ([]delivery.Record, bool, error) {
+	rows, err := s.db.QueryContext(ctx,
+		`SELECT id, template_id, channel, occurred_at, status, retry_count, failure_reason, notification_id
+		   FROM delivery_records
+		  WHERE notification_id = ?
+		  ORDER BY occurred_at ASC, id ASC`,
+		notificationID,
+	)
+	if err != nil {
+		return nil, false, fmt.Errorf("%w: %v", ErrStorageUnavailable, err)
+	}
+	defer rows.Close()
+
+	var records []delivery.Record
+	for rows.Next() {
+		record, err := scanDeliveryRecord(rows)
+		if err != nil {
+			return nil, false, fmt.Errorf("%w: %v", ErrStorageUnavailable, err)
+		}
+		records = append(records, record)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, false, fmt.Errorf("%w: %v", ErrStorageUnavailable, err)
+	}
+	if len(records) == 0 {
+		return nil, false, nil
+	}
+	return records, true, nil
 }
