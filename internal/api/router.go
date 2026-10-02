@@ -33,6 +33,11 @@ func NewRouter(st *store.Store) *gin.Engine {
 	router.GET(deliveryRecords+"/channel-comparison", channelComparison(st))
 	router.GET(deliveryRecords+"/:id", getDeliveryRecord(st))
 
+	notificationTemplates := "/api/v1/notification-templates"
+	router.POST(notificationTemplates, createNotificationTemplate(st))
+	router.GET(notificationTemplates, listNotificationTemplates(st))
+	router.GET(notificationTemplates+"/:template_id", getNotificationTemplate(st))
+
 	router.NoRoute(func(c *gin.Context) {
 		c.JSON(http.StatusNotFound, gin.H{"error": gin.H{"code": "route_not_found", "message": "no route matches this path"}})
 	})
