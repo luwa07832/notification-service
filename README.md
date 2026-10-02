@@ -67,6 +67,27 @@ go run .
 }
 ```
 
+### `POST /api/v1/delivery-records/batch`
+
+在同一轮中包含多次真实投递尝试时，使用批量入口一次提交。请求体为 `records` 数组，每个元素的字段、类型与校验规则与单条入口完全相同（RFC 3339 时间、四种渠道与状态、非负 `retry_count`，且只有 `failed`/`retrying` 可填写非空 `failure_reason`）。每批必须包含 2 到 100 条：
+
+```json
+{
+  "records": [
+    {"template_id":"tpl-1","channel":"sms","occurred_at":"2026-10-01T10:00:00Z","status":"pending","retry_count":0,"failure_reason":""},
+    {"template_id":"tpl-1","channel":"sms","occurred_at":"2026-10-01T10:00:05Z","status":"failed","retry_count":1,"failure_reason":"provider timeout"}
+  ]
+}
+```
+
+成功时 HTTP 201，按请求顺序返回每条记录的完整登记结果，每条记录各自生成唯一 `id`：
+
+```json
+{"records":[{"id":"...", ...},{"id":"...", ...}]}
+```
+
+只要 JSON 不合法、`records` 缺失或不是数组、条数不在 2 到 100、任一元素不通过单条规则校验，整批都不登记，统一返回 HTTP 400 与错误码 `INVALID_DELIVERY_BATCH`。批次以原子方式写入：存储不可用或无法完整提交时返回 HTTP 503 与 `STORAGE_UNAVAILABLE`，失败批次不会留下任何部分记录。批量入口只登记调用方声明已发生的投递尝试，不触发通知发送、模板渲染或重试；成功写入的记录立即可由现有按标识、渠道时间范围、失败检索与汇总入口读取。
+
 ### `GET /api/v1/delivery-records/{id}`
 
 按投递记录唯一标识查询单条记录，命中时 HTTP 200 返回上述记录对象；不存在时 HTTP 404 与错误码 `DELIVERY_RECORD_NOT_FOUND`。
@@ -390,6 +411,7 @@ go run .
 | HTTP | code | 触发场景 |
 |---|---|---|
 | 400 | `INVALID_DELIVERY_RECORD` | 写入校验失败：渠道不存在、状态非法、`retry_count` 缺失或不是非负整数、`failed`/`retrying` 缺少失败原因、`pending`/`succeeded` 携带失败原因、时间格式非法 |
+| 400 | `INVALID_DELIVERY_BATCH` | 批量登记校验失败：JSON 不合法、`records` 缺失或不是数组、条数不在 2–100、任一元素不满足单条记录校验规则；此时整批不登记 |
 | 400 | `INVALID_DELIVERY_QUERY` | 查询校验失败：渠道不存在、时间格式非法、`start` 不早于 `end`、缺少时间参数 |
 | 400 | `INVALID_DELIVERY_SEARCH` | 高级检索校验失败：缺少或非法的 `channel`/`start`/`end`、时间不是 RFC 3339、`start` 不早于 `end`、渠道或 `status` 越界、可选条件为空值、`retry_min`/`retry_max` 为负数或逆序、`page` 小于 1、`page_size` 超出 1–200 或类型格式非法 |
 | 400 | `INVALID_DELIVERY_SUMMARY` | 失败原因汇总校验失败：缺少或非法的 `channel`/`start`/`end`、时间不是 RFC 3339、`start` 不早于 `end`、`template_id` 显式为空 |

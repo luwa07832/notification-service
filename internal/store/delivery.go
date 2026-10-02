@@ -38,6 +38,47 @@ func (s *Store) CreateDeliveryRecord(ctx context.Context, record delivery.Record
 	return record, nil
 }
 
+// CreateDeliveryRecords inserts a batch of delivery attempts atomically. Each
+// record gets its own row and its own id, and request order is preserved in
+// the returned slice. The batch either commits completely or rolls back, so a
+// failed batch never leaves partial records behind.
+func (s *Store) CreateDeliveryRecords(ctx context.Context, records []delivery.Record) ([]delivery.Record, error) {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return nil, fmt.Errorf("%w: %v", ErrStorageUnavailable, err)
+	}
+	commitErr := func(err error) ([]delivery.Record, error) {
+		_ = tx.Rollback()
+		return nil, fmt.Errorf("%w: %v", ErrStorageUnavailable, err)
+	}
+
+	stmt, err := tx.PrepareContext(ctx,
+		`INSERT INTO delivery_records
+		    (id, template_id, channel, occurred_at, status, retry_count, failure_reason)
+		  VALUES (?, ?, ?, ?, ?, ?, ?)`)
+	if err != nil {
+		return commitErr(err)
+	}
+	defer stmt.Close()
+
+	saved := make([]delivery.Record, len(records))
+	for i, record := range records {
+		record.ID = uuid.NewString()
+		storedAt := record.OccurredAt.UTC().Format(storedTimeFormat)
+		if _, err := stmt.ExecContext(ctx,
+			record.ID, record.TemplateID, record.Channel, storedAt,
+			record.Status, record.RetryCount, record.FailureReason,
+		); err != nil {
+			return commitErr(err)
+		}
+		saved[i] = record
+	}
+	if err := tx.Commit(); err != nil {
+		return commitErr(err)
+	}
+	return saved, nil
+}
+
 // GetDeliveryRecord loads one record by id. The boolean is false when no row
 // exists; that is not a storage failure.
 func (s *Store) GetDeliveryRecord(ctx context.Context, id string) (delivery.Record, bool, error) {

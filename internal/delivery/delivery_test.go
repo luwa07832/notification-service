@@ -106,3 +106,61 @@ func TestNewQueryRejectsInvalidInputs(t *testing.T) {
 		})
 	}
 }
+
+func batchInput(size int) BatchInput {
+	records := make([]RecordInput, size)
+	for i := range records {
+		records[i] = RecordInput{
+			TemplateID:    "tpl-1",
+			Channel:       "sms",
+			OccurredAt:    "2026-10-01T10:00:00Z",
+			Status:        StatusPending,
+			RetryCount:    intPtr(0),
+			FailureReason: "",
+		}
+	}
+	return BatchInput{Records: records}
+}
+
+func TestNewBatchAcceptsTwoToHundred(t *testing.T) {
+	for _, size := range []int{MinBatchSize, 50, MaxBatchSize} {
+		records, err := NewBatch(batchInput(size))
+		if err != nil {
+			t.Fatalf("size %d: unexpected error: %v", size, err)
+		}
+		if len(records) != size {
+			t.Fatalf("size %d: got %d records", size, len(records))
+		}
+	}
+}
+
+func TestNewBatchRejectsBadSizes(t *testing.T) {
+	for _, size := range []int{0, 1, MaxBatchSize + 1} {
+		if _, err := NewBatch(batchInput(size)); err != ErrInvalidBatch {
+			t.Fatalf("size %d: err = %v, want ErrInvalidBatch", size, err)
+		}
+	}
+	var in BatchInput
+	if _, err := NewBatch(in); err != ErrInvalidBatch {
+		t.Fatalf("nil records: err = %v, want ErrInvalidBatch", err)
+	}
+}
+
+func TestNewBatchRejectsAnyInvalidElementAndKeepsOrder(t *testing.T) {
+	in := batchInput(3)
+	in.Records[1].Status = "bogus"
+	if _, err := NewBatch(in); err != ErrInvalidBatch {
+		t.Fatalf("err = %v, want ErrInvalidBatch", err)
+	}
+
+	in = batchInput(3)
+	in.Records[0].OccurredAt = "2026-10-01T12:00:00Z"
+	in.Records[2].OccurredAt = "2026-10-01T11:00:00Z"
+	records, err := NewBatch(in)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if records[0].OccurredAt.Hour() != 12 || records[2].OccurredAt.Hour() != 11 {
+		t.Fatal("request order not preserved")
+	}
+}

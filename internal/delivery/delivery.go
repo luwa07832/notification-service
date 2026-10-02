@@ -11,7 +11,14 @@ import (
 // Sentinel validation errors. The HTTP layer maps them to the published error codes.
 var (
 	ErrInvalidRecord = errors.New("invalid delivery record")
+	ErrInvalidBatch  = errors.New("invalid delivery record batch")
 	ErrInvalidQuery  = errors.New("invalid delivery query")
+)
+
+// Batch size bounds for the bulk registration entry.
+const (
+	MinBatchSize = 2
+	MaxBatchSize = 100
 )
 
 // Allowed delivery channels.
@@ -55,6 +62,12 @@ type RecordInput struct {
 	Status        string `json:"status"`
 	RetryCount    *int   `json:"retry_count"`
 	FailureReason string `json:"failure_reason"`
+}
+
+// BatchInput is the payload submitted through the bulk write entry. Every
+// element is validated by the same rules as a single-record submission.
+type BatchInput struct {
+	Records []RecordInput `json:"records"`
 }
 
 // Record is a successfully registered delivery attempt. Every attempt is an
@@ -107,6 +120,25 @@ func NewRecord(in RecordInput) (Record, error) {
 		RetryCount:    *in.RetryCount,
 		FailureReason: in.FailureReason,
 	}, nil
+}
+
+// NewBatch validates a bulk submission and builds the records in request
+// order. The batch must contain between MinBatchSize and MaxBatchSize records,
+// and a single invalid element rejects the whole batch before anything is
+// registered.
+func NewBatch(in BatchInput) ([]Record, error) {
+	if len(in.Records) < MinBatchSize || len(in.Records) > MaxBatchSize {
+		return nil, ErrInvalidBatch
+	}
+	records := make([]Record, len(in.Records))
+	for i, item := range in.Records {
+		record, err := NewRecord(item)
+		if err != nil {
+			return nil, ErrInvalidBatch
+		}
+		records[i] = record
+	}
+	return records, nil
 }
 
 // Query is a validated channel plus half-open time range query.

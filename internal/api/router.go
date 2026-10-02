@@ -25,6 +25,7 @@ func NewRouter(st *store.Store) *gin.Engine {
 
 	deliveryRecords := "/api/v1/delivery-records"
 	router.POST(deliveryRecords, createDeliveryRecord(st))
+	router.POST(deliveryRecords+"/batch", createDeliveryRecords(st))
 	router.GET(deliveryRecords, listDeliveryRecords(st))
 	router.GET(deliveryRecords+"/search", searchDeliveryRecords(st))
 	router.GET(deliveryRecords+"/failure-summary", failureSummary(st))

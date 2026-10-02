@@ -191,3 +191,84 @@ func TestDeliveryMethodsReportStorageUnavailableWhenClosed(t *testing.T) {
 		t.Fatalf("list err = %v, want ErrStorageUnavailable", err)
 	}
 }
+
+func TestCreateDeliveryRecordsBatchRoundTrip(t *testing.T) {
+	st := openTestStore(t)
+	ctx := context.Background()
+	input := []delivery.Record{
+		mustRecord(t, delivery.RecordInput{
+			TemplateID: "tpl-1", Channel: "sms", OccurredAt: "2026-10-01T10:00:00Z",
+			Status: delivery.StatusPending, RetryCount: ptrInt(0),
+		}),
+		mustRecord(t, delivery.RecordInput{
+			TemplateID: "tpl-1", Channel: "sms", OccurredAt: "2026-10-01T10:00:05Z",
+			Status: delivery.StatusRetrying, RetryCount: ptrInt(1), FailureReason: "busy",
+		}),
+		mustRecord(t, delivery.RecordInput{
+			TemplateID: "tpl-1", Channel: "sms", OccurredAt: "2026-10-01T10:00:10Z",
+			Status: delivery.StatusFailed, RetryCount: ptrInt(2), FailureReason: "dead",
+		}),
+	}
+
+	saved, err := st.CreateDeliveryRecords(ctx, input)
+	if err != nil {
+		t.Fatalf("batch create: %v", err)
+	}
+	if len(saved) != 3 {
+		t.Fatalf("saved len = %d, want 3", len(saved))
+	}
+	ids := map[string]struct{}{}
+	for i, record := range saved {
+		if record.ID == "" {
+			t.Fatalf("record %d missing id", i)
+		}
+		if _, dup := ids[record.ID]; dup {
+			t.Fatalf("duplicate id %s", record.ID)
+		}
+		ids[record.ID] = struct{}{}
+		if record.Status != input[i].Status {
+			t.Fatalf("record %d order changed: %s", i, record.Status)
+		}
+	}
+
+	query, _ := delivery.NewQuery("sms", "2026-10-01T10:00:00Z", "2026-10-01T11:00:00Z")
+	listed, err := st.ListDeliveryRecords(ctx, query)
+	if err != nil {
+		t.Fatalf("list: %v", err)
+	}
+	if len(listed) != 3 {
+		t.Fatalf("listed len = %d, want 3", len(listed))
+	}
+}
+
+func TestCreateDeliveryRecordsBatchRollsBackOnFailure(t *testing.T) {
+	st := openTestStore(t)
+	ctx := context.Background()
+	good := mustRecord(t, delivery.RecordInput{
+		TemplateID: "tpl-1", Channel: "sms", OccurredAt: "2026-10-01T10:00:00Z",
+		Status: delivery.StatusPending, RetryCount: ptrInt(0),
+	})
+	bad := good
+	bad.RetryCount = -1 // violates the CHECK constraint halfway through the batch
+
+	_, err := st.CreateDeliveryRecords(ctx, []delivery.Record{good, bad, good})
+	if !errors.Is(err, ErrStorageUnavailable) {
+		t.Fatalf("err = %v, want ErrStorageUnavailable", err)
+	}
+
+	query, _ := delivery.NewQuery("sms", "2026-10-01T10:00:00Z", "2026-10-01T11:00:00Z")
+	listed, err := st.ListDeliveryRecords(ctx, query)
+	if err != nil {
+		t.Fatalf("list: %v", err)
+	}
+	if len(listed) != 0 {
+		t.Fatalf("rolled-back batch left %d partial records", len(listed))
+	}
+
+	if err := st.Close(); err != nil {
+		t.Fatalf("close: %v", err)
+	}
+	if _, err := st.CreateDeliveryRecords(context.Background(), []delivery.Record{good, good}); !errors.Is(err, ErrStorageUnavailable) {
+		t.Fatalf("closed store err = %v, want ErrStorageUnavailable", err)
+	}
+}
