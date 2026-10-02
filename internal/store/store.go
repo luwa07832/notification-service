@@ -58,4 +58,25 @@ CREATE TABLE IF NOT EXISTS delivery_records (
 
 CREATE INDEX IF NOT EXISTS idx_delivery_records_channel_time
 	ON delivery_records (channel, occurred_at);
+
+CREATE INDEX IF NOT EXISTS idx_delivery_records_template
+	ON delivery_records (template_id);
+
+CREATE TABLE IF NOT EXISTS notification_templates (
+	template_id TEXT PRIMARY KEY,
+	name        TEXT NOT NULL,
+	body        TEXT NOT NULL,
+	enabled     INTEGER NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS notification_template_channels (
+	template_id TEXT NOT NULL,
+	channel     TEXT NOT NULL,
+	position    INTEGER NOT NULL,
+	PRIMARY KEY (template_id, channel),
+	FOREIGN KEY (template_id) REFERENCES notification_templates (template_id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_notification_template_channels_channel
+	ON notification_template_channels (channel);
 `

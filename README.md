@@ -301,6 +301,84 @@ go run .
 
 对比端点只读，不补造投递尝试、重试或失败原因，也不改变通知发送入口、模板内容、渠道分发、发送结果、重试触发和失败原因保留方式。
 
+
+### `POST /api/v1/notification-templates`
+
+登记一个不可变的通知模板。投递记录入口保持不变，模板登记只补充名称、正文和支持渠道等元数据。
+
+请求体：
+
+| 字段 | 类型 | 说明 |
+|---|---|---|
+| `template_id` | string | 模板标识，去除首尾空白后必须非空；存储的是去空白后的值 |
+| `name` | string | 模板名称，去除首尾空白后必须非空；存储的是去空白后的值 |
+| `body` | string | 模板正文原文，至少含一个非空白字符；存储与返回均保留原文 |
+| `channels` | string 数组 | 一到四个不重复的支持渠道，取值为 `sms`、`email`、`push`、`in_app`，按提交顺序保存 |
+| `enabled` | boolean | 模板是否启用，必须显式给出布尔值 |
+
+成功时 HTTP 201，返回模板对象：
+
+```json
+{
+  "template_id": "tpl-1",
+  "name": "Welcome",
+  "body": "hello {name}",
+  "channels": ["sms", "email"],
+  "enabled": true
+}
+```
+
+`template_id` 重复时 HTTP 409 与 `TEMPLATE_ALREADY_EXISTS`；任一字段非法时 HTTP 400 与 `INVALID_TEMPLATE_REQUEST`。模板登记后不可修改或删除，也没有对应的更新入口。
+
+### `GET /api/v1/notification-templates`
+
+列出已登记模板，支持按 `channel` 与 `enabled` 精确过滤，两个条件都可选且同时生效：
+
+| 参数 | 说明 |
+|---|---|
+| `channel`（可选） | 模板支持渠道之一：`sms`、`email`、`push`、`in_app`；不接受空白或未知值 |
+| `enabled`（可选） | 仅接受严格的 `true` 或 `false` 字面量 |
+
+非法过滤条件返回 HTTP 400 与 `INVALID_TEMPLATE_REQUEST`。结果按 `template_id` 升序返回，没有命中时返回 HTTP 200 与空数组：
+
+```json
+{"templates":[]}
+```
+
+### `GET /api/v1/notification-templates/{template_id}`
+
+返回模板对象与该模板的投递事实汇总 `delivery_summary`。路径标识去除首尾空白后必须能匹配已登记模板，否则（含纯空白标识）返回 HTTP 404 与 `TEMPLATE_NOT_FOUND`。
+
+`delivery_summary` 汇总全部已登记投递记录（与时间、渠道无关）：
+
+| 字段 | 说明 |
+|---|---|
+| `total_attempts` | 该模板的尝试总数 |
+| `status_counts` | 固定包含 `pending`、`retrying`、`succeeded`、`failed` 四项计数，未出现的状态为 0 |
+| `retry_count_min` / `retry_count_max` | 重试次数的最小值与最大值；没有尝试时均为 `null` |
+| `failure_reasons` | 只统计 `failed` 与 `retrying` 记录的非空失败原因原文，不折叠大小写或空白，按次数降序、次数相同按原文升序，每项含 `failure_reason` 与 `attempt_count` |
+
+```json
+{
+  "template_id": "tpl-1",
+  "name": "Welcome",
+  "body": "hello {name}",
+  "channels": ["sms", "email"],
+  "enabled": true,
+  "delivery_summary": {
+    "total_attempts": 3,
+    "status_counts": {"pending": 0, "retrying": 1, "succeeded": 1, "failed": 1},
+    "retry_count_min": 0,
+    "retry_count_max": 2,
+    "failure_reasons": [
+      {"failure_reason": "provider timeout", "attempt_count": 2}
+    ]
+  }
+}
+```
+
+没有尝试时计数为 0、上下界为 `null`、`failure_reasons` 为空数组。详情端点只读，不补造投递尝试或失败原因；模板登记同样不改变投递记录的写入与查询方式。
+
 ## 错误约定
 
 所有错误响应都是单个顶层 `error` 对象，包含 `code` 与 `message` 两个字符串字段；`message` 不包含 SQL、堆栈或文件路径。
@@ -314,6 +392,9 @@ go run .
 | 400 | `INVALID_DELIVERY_OVERVIEW` | 投递概览校验失败：缺少或非法的 `channel`/`start`/`end`、时间不是 RFC 3339、`start` 不早于 `end`、渠道越界、`template_id` 显式为空白 |
 | 400 | `INVALID_DELIVERY_TREND` | 趋势查询校验失败：缺少或非法的 `channel`/`start`/`end`/`interval`、时间不是 RFC 3339、`start` 不早于 `end`、`start`/`end` 未落在桶边界、`template_id` 显式为空白 |
 | 400 | `INVALID_DELIVERY_COMPARISON` | 跨渠道对比校验失败：`channels` 缺失、数量不在 2–4 个、含未知或重复渠道、含空白，`start`/`end` 缺失或不是 RFC 3339、`start` 不早于 `end`、`template_id` 显式为空白 |
+| 400 | `INVALID_TEMPLATE_REQUEST` | 模板登记或列表过滤校验失败：`template_id`/`name` 去空白后为空、`body` 全为空白、`channels` 为空、数量超出 1–4、含未知或重复渠道、`enabled` 缺失或不是布尔值，或列表的 `channel`/`enabled` 过滤条件非法 |
+| 409 | `TEMPLATE_ALREADY_EXISTS` | 登记的 `template_id` 已经存在 |
+| 404 | `TEMPLATE_NOT_FOUND` | 详情查询的模板标识不存在或为空白 |
 | 404 | `DELIVERY_RECORD_NOT_FOUND` | 按标识查询不到记录 |
 | 503 | `STORAGE_UNAVAILABLE` | 登记或查询存储暂时不可用；此时不会返回任何声称记录已保存的结果 |
 
