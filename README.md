@@ -251,6 +251,38 @@ go run .
 
 趋势端点只读，只统计已登记的尝试，不补造尝试或失败原因，也不改变通知发送入口、模板内容、渠道分发、重试触发、记录写入和历史失败原因的保留方式。
 
+### `GET /api/v1/delivery-records/channel-comparison`
+
+只读的跨渠道失败对比，以通知模板、目标渠道、投递状态、重试次数和失败原因为事实数据，比较同一半开区间 `start <= occurred_at < end` 内多个渠道的差异。时间参数为 RFC 3339 且 `start` 必须早于 `end`。
+
+| 参数 | 说明 |
+|---|---|
+| `channels`（必填） | 逗号分隔的 2 到 4 个渠道，取值为 `sms`、`email`、`push`、`in_app`；不得重复，渠道值与列表中都不得包含空白 |
+| `start`（必填） | 范围起点（含），RFC 3339 |
+| `end`（必填） | 范围终点（不含），RFC 3339，必须晚于 `start` |
+| `template_id`（可选） | 按去除首尾空白后的模板标识精确匹配；显式传入空白值视为非法 |
+
+成功时 HTTP 200 返回单个 JSON 对象。`channels` 按请求顺序给出渠道；`total_attempts` 与 `status_counts` 按渠道给出尝试数与固定四项（`pending`、`retrying`、`succeeded`、`failed`）计数，未出现的渠道计数为 0；`retry_count_min` 与 `retry_count_max` 按渠道给出重试次数边界，没有尝试的渠道为 `null`。`failure_reasons` 只统计 `failed`/`retrying` 记录的非空失败原因原文，不折叠大小写、空白或同义词，每项含 `failure_reason`、按渠道给出的 `channel_counts`（包含全部请求渠道，零计数也保留）和合计 `attempt_count`，按合计降序、合计相同按原文升序排列：
+
+```json
+{
+  "channels": ["sms", "email"],
+  "total_attempts": {"sms": 3, "email": 1},
+  "status_counts": {
+    "sms": {"pending": 1, "retrying": 1, "succeeded": 0, "failed": 1},
+    "email": {"pending": 0, "retrying": 0, "succeeded": 0, "failed": 1}
+  },
+  "retry_count_min": {"sms": 0, "email": 3},
+  "retry_count_max": {"sms": 2, "email": 3},
+  "failure_reasons": [
+    {"failure_reason": "Timeout", "channel_counts": {"sms": 2, "email": 0}, "attempt_count": 2},
+    {"failure_reason": "bounce", "channel_counts": {"sms": 0, "email": 1}, "attempt_count": 1}
+  ]
+}
+```
+
+区间内没有任何已登记尝试时仍为 HTTP 200：各渠道计数为 0、重试边界为 `null`、`failure_reasons` 为空数组。`channels` 缺失、数量不在 2 到 4 个之间、含未知渠道、重复或空白，`start`/`end` 缺失或不是 RFC 3339、`start` 不早于 `end`，以及 `template_id` 显式为空白，统一返回 HTTP 400 与错误码 `INVALID_DELIVERY_COMPARISON`。该端点只读，不补造投递尝试、重试或失败原因，也不改变通知发送入口、模板内容、渠道分发、发送结果、重试触发和失败原因保留方式。
+
 ## 错误约定
 
 所有错误响应都是单个顶层 `error` 对象，包含 `code` 与 `message` 两个字符串字段；`message` 不包含 SQL、堆栈或文件路径。
@@ -262,6 +294,7 @@ go run .
 | 400 | `INVALID_DELIVERY_SEARCH` | 高级检索校验失败：缺少或非法的 `channel`/`start`/`end`、时间不是 RFC 3339、`start` 不早于 `end`、渠道或 `status` 越界、可选条件为空值、`retry_min`/`retry_max` 为负数或逆序、`page` 小于 1、`page_size` 超出 1–200 或类型格式非法 |
 | 400 | `INVALID_DELIVERY_SUMMARY` | 失败原因汇总校验失败：缺少或非法的 `channel`/`start`/`end`、时间不是 RFC 3339、`start` 不早于 `end`、`template_id` 显式为空 |
 | 400 | `INVALID_DELIVERY_OVERVIEW` | 投递概览校验失败：缺少或非法的 `channel`/`start`/`end`、时间不是 RFC 3339、`start` 不早于 `end`、渠道越界、`template_id` 显式为空白 |
+| 400 | `INVALID_DELIVERY_COMPARISON` | 跨渠道失败对比校验失败：`channels` 缺失、数量不在 2–4 个之间、含未知渠道、重复或含空白，`start`/`end` 缺失或不是 RFC 3339、`start` 不早于 `end`、`template_id` 显式为空白 |
 | 400 | `INVALID_DELIVERY_TREND` | 趋势查询校验失败：缺少或非法的 `channel`/`start`/`end`/`interval`、时间不是 RFC 3339、`start` 不早于 `end`、`start`/`end` 未落在桶边界、`template_id` 显式为空白 |
 | 404 | `DELIVERY_RECORD_NOT_FOUND` | 按标识查询不到记录 |
 | 503 | `STORAGE_UNAVAILABLE` | 登记或查询存储暂时不可用；此时不会返回任何声称记录已保存的结果 |
