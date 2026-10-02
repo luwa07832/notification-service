@@ -12,6 +12,7 @@ import (
 
 const (
 	codeInvalidRecord = "INVALID_DELIVERY_RECORD"
+	codeInvalidBatch  = "INVALID_DELIVERY_BATCH"
 	codeInvalidQuery  = "INVALID_DELIVERY_QUERY"
 	codeRecordMissing = "DELIVERY_RECORD_NOT_FOUND"
 	codeStorageDown   = "STORAGE_UNAVAILABLE"
@@ -44,6 +45,41 @@ func createDeliveryRecord(st *store.Store) gin.HandlerFunc {
 			return
 		}
 		c.JSON(http.StatusCreated, saved)
+	}
+}
+
+// createDeliveryRecords handles POST /api/v1/delivery-records/batch. It
+// validates every element with the single-record rules and registers the whole
+// round in one transaction; nothing is written when any element is invalid.
+func createDeliveryRecords(st *store.Store) gin.HandlerFunc {
+	return func(c *gin.Context) {
+		var payload struct {
+			Records []delivery.RecordInput `json:"records"`
+		}
+		decoder := json.NewDecoder(c.Request.Body)
+		if err := decoder.Decode(&payload); err != nil {
+			respondError(c, http.StatusBadRequest, codeInvalidBatch, "delivery record batch payload is not valid")
+			return
+		}
+		if payload.Records == nil ||
+			len(payload.Records) < delivery.MinBatchRecords ||
+			len(payload.Records) > delivery.MaxBatchRecords {
+			respondError(c, http.StatusBadRequest, codeInvalidBatch, "delivery record batch payload is not valid")
+			return
+		}
+
+		records, err := delivery.NewRecords(payload.Records)
+		if err != nil {
+			respondError(c, http.StatusBadRequest, codeInvalidBatch, "delivery record batch payload is not valid")
+			return
+		}
+
+		saved, err := st.CreateDeliveryRecords(c.Request.Context(), records)
+		if err != nil {
+			respondError(c, http.StatusServiceUnavailable, codeStorageDown, "delivery record storage is not available")
+			return
+		}
+		c.JSON(http.StatusCreated, gin.H{"records": saved})
 	}
 }
 

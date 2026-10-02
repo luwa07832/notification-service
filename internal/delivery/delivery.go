@@ -11,7 +11,14 @@ import (
 // Sentinel validation errors. The HTTP layer maps them to the published error codes.
 var (
 	ErrInvalidRecord = errors.New("invalid delivery record")
+	ErrInvalidBatch  = errors.New("invalid delivery record batch")
 	ErrInvalidQuery  = errors.New("invalid delivery query")
+)
+
+// Batch size limits for a single batch registration.
+const (
+	MinBatchRecords = 2
+	MaxBatchRecords = 100
 )
 
 // Allowed delivery channels.
@@ -107,6 +114,25 @@ func NewRecord(in RecordInput) (Record, error) {
 		RetryCount:    *in.RetryCount,
 		FailureReason: in.FailureReason,
 	}, nil
+}
+
+// NewRecords validates a batch of inputs and builds the records in submitted
+// order. Every element is validated with the same rules as a single
+// registration; an invalid element, or a batch outside the 2..100 size range,
+// rejects the whole batch.
+func NewRecords(inputs []RecordInput) ([]Record, error) {
+	if len(inputs) < MinBatchRecords || len(inputs) > MaxBatchRecords {
+		return nil, ErrInvalidBatch
+	}
+	records := make([]Record, len(inputs))
+	for i, in := range inputs {
+		record, err := NewRecord(in)
+		if err != nil {
+			return nil, ErrInvalidBatch
+		}
+		records[i] = record
+	}
+	return records, nil
 }
 
 // Query is a validated channel plus half-open time range query.

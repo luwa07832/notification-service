@@ -67,6 +67,30 @@ go run .
 }
 ```
 
+### `POST /api/v1/delivery-records/batch`
+
+把同一轮的多次真实投递尝试一次提交、批量登记。请求体使用 `records` 数组，每个元素与单条入口的输入同构（同样的 `template_id`、`channel`、`occurred_at`、`status`、`retry_count`、`failure_reason` 语义与校验规则），每批必须包含 2 到 100 条：
+
+```json
+{
+  "records": [
+    {"template_id":"tpl-1","channel":"sms","occurred_at":"2026-10-01T10:00:00Z","status":"retrying","retry_count":1,"failure_reason":"provider busy"},
+    {"template_id":"tpl-1","channel":"sms","occurred_at":"2026-10-01T10:00:05Z","status":"failed","retry_count":2,"failure_reason":"provider timeout"}
+  ]
+}
+```
+
+每条记录分别生成唯一 `id`，响应严格保留请求顺序。成功时 HTTP 201：
+
+```json
+{"records":[
+  {"id":"...","template_id":"tpl-1","channel":"sms","occurred_at":"2026-10-01T10:00:00Z","status":"retrying","retry_count":1,"failure_reason":"provider busy"},
+  {"id":"...","template_id":"tpl-1","channel":"sms","occurred_at":"2026-10-01T10:00:05Z","status":"failed","retry_count":2,"failure_reason":"provider timeout"}
+]}
+```
+
+只要 JSON 不合法、`records` 缺失或不是数组、条数不在 2 到 100、任一元素不满足单条校验规则，整批都不登记，统一返回 HTTP 400 与错误码 `INVALID_DELIVERY_BATCH`。整批写入在单个事务内完成：存储不可用或无法完整提交时返回 HTTP 503 与 `STORAGE_UNAVAILABLE`，失败批次不会留下部分记录。写入成功的记录立即可由按标识、渠道时间范围、失败检索与各汇总入口读取，排序、分页与统计口径不变。批量入口只登记调用方声明已发生的投递尝试，不触发通知发送、模板渲染或重试，也不改变单条入口的响应或错误。
+
 ### `GET /api/v1/delivery-records/{id}`
 
 按投递记录唯一标识查询单条记录，命中时 HTTP 200 返回上述记录对象；不存在时 HTTP 404 与错误码 `DELIVERY_RECORD_NOT_FOUND`。
@@ -390,6 +414,7 @@ go run .
 | HTTP | code | 触发场景 |
 |---|---|---|
 | 400 | `INVALID_DELIVERY_RECORD` | 写入校验失败：渠道不存在、状态非法、`retry_count` 缺失或不是非负整数、`failed`/`retrying` 缺少失败原因、`pending`/`succeeded` 携带失败原因、时间格式非法 |
+| 400 | `INVALID_DELIVERY_BATCH` | 批量登记校验失败：JSON 不合法、`records` 缺失或不是数组、条数不在 2–100、任一元素不满足单条记录校验规则；整批均不登记 |
 | 400 | `INVALID_DELIVERY_QUERY` | 查询校验失败：渠道不存在、时间格式非法、`start` 不早于 `end`、缺少时间参数 |
 | 400 | `INVALID_DELIVERY_SEARCH` | 高级检索校验失败：缺少或非法的 `channel`/`start`/`end`、时间不是 RFC 3339、`start` 不早于 `end`、渠道或 `status` 越界、可选条件为空值、`retry_min`/`retry_max` 为负数或逆序、`page` 小于 1、`page_size` 超出 1–200 或类型格式非法 |
 | 400 | `INVALID_DELIVERY_SUMMARY` | 失败原因汇总校验失败：缺少或非法的 `channel`/`start`/`end`、时间不是 RFC 3339、`start` 不早于 `end`、`template_id` 显式为空 |

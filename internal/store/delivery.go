@@ -24,18 +24,49 @@ const storedTimeFormat = "2006-01-02T15:04:05.000000000Z"
 // own row and its own id; retries never overwrite earlier failure reasons.
 func (s *Store) CreateDeliveryRecord(ctx context.Context, record delivery.Record) (delivery.Record, error) {
 	record.ID = uuid.NewString()
+	if err := insertDeliveryRecord(ctx, s.db, record); err != nil {
+		return delivery.Record{}, fmt.Errorf("%w: %v", ErrStorageUnavailable, err)
+	}
+	return record, nil
+}
+
+// CreateDeliveryRecords inserts one round of delivery attempts as a single
+// transaction: every record gets its own id and row in submitted order, and a
+// failure while writing any element rolls the whole batch back so no partial
+// records remain.
+func (s *Store) CreateDeliveryRecords(ctx context.Context, records []delivery.Record) ([]delivery.Record, error) {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return nil, fmt.Errorf("%w: %v", ErrStorageUnavailable, err)
+	}
+	for i := range records {
+		records[i].ID = uuid.NewString()
+		if err := insertDeliveryRecord(ctx, tx, records[i]); err != nil {
+			_ = tx.Rollback()
+			return nil, fmt.Errorf("%w: %v", ErrStorageUnavailable, err)
+		}
+	}
+	if err := tx.Commit(); err != nil {
+		_ = tx.Rollback()
+		return nil, fmt.Errorf("%w: %v", ErrStorageUnavailable, err)
+	}
+	return records, nil
+}
+
+type deliveryRecordExecer interface {
+	ExecContext(ctx context.Context, query string, args ...any) (sql.Result, error)
+}
+
+func insertDeliveryRecord(ctx context.Context, execer deliveryRecordExecer, record delivery.Record) error {
 	storedAt := record.OccurredAt.UTC().Format(storedTimeFormat)
-	_, err := s.db.ExecContext(ctx,
+	_, err := execer.ExecContext(ctx,
 		`INSERT INTO delivery_records
 		    (id, template_id, channel, occurred_at, status, retry_count, failure_reason)
 		  VALUES (?, ?, ?, ?, ?, ?, ?)`,
 		record.ID, record.TemplateID, record.Channel, storedAt,
 		record.Status, record.RetryCount, record.FailureReason,
 	)
-	if err != nil {
-		return delivery.Record{}, fmt.Errorf("%w: %v", ErrStorageUnavailable, err)
-	}
-	return record, nil
+	return err
 }
 
 // GetDeliveryRecord loads one record by id. The boolean is false when no row
