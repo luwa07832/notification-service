@@ -32,6 +32,7 @@ func NewRouter(st *store.Store) *gin.Engine {
 	router.GET(deliveryRecords+"/attempt-overview", attemptOverview(st))
 	router.GET(deliveryRecords+"/trend", deliveryTrend(st))
 	router.GET(deliveryRecords+"/channel-comparison", channelComparison(st))
+	router.GET(deliveryRecords+"/template-alignment", templateAlignment(st))
 	router.GET(deliveryRecords+"/:id", getDeliveryRecord(st))
 
 	notifications := "/api/v1/notifications"
